@@ -2086,6 +2086,7 @@ func main() {
 
 	case "cleanup":
 		accountName := ""
+		yes := false
 
 		for i := 2; i < len(os.Args); i++ {
 			switch os.Args[i] {
@@ -2094,6 +2095,8 @@ func main() {
 					accountName = os.Args[i+1]
 					i++
 				}
+			case "--yes":
+				yes = true
 			}
 		}
 
@@ -2103,18 +2106,22 @@ func main() {
 			return
 		}
 
-		reader := bufio.NewReader(os.Stdin)
-		if accountName != "" {
-			fmt.Printf("Delete ALL workers from account '%s'? (y/N): ", accountName)
-		} else {
-			fmt.Print("Delete ALL FlareTunnel endpoints from ALL accounts? (y/N): ")
-		}
-
-		confirm, _ := reader.ReadString('\n')
-		if strings.ToLower(strings.TrimSpace(confirm)) == "y" {
+		if yes {
 			ft.CleanupWorkers(accountName)
 		} else {
-			fmt.Println("Cleanup cancelled.")
+			reader := bufio.NewReader(os.Stdin)
+			if accountName != "" {
+				fmt.Printf("Delete ALL workers from account '%s'? (y/N): ", accountName)
+			} else {
+				fmt.Print("Delete ALL FlareTunnel endpoints from ALL accounts? (y/N): ")
+			}
+
+			confirm, _ := reader.ReadString('\n')
+			if strings.ToLower(strings.TrimSpace(confirm)) == "y" {
+				ft.CleanupWorkers(accountName)
+			} else {
+				fmt.Println("Cleanup cancelled.")
+			}
 		}
 
 	case "tunnel":
@@ -2267,6 +2274,7 @@ Examples:
   # Cleanup
   go run FlareTunnel.go cleanup
   go run FlareTunnel.go cleanup --account main
+  go run FlareTunnel.go cleanup --account main --yes
 
 Options:
   Create:
@@ -2291,6 +2299,7 @@ Options:
 
   Cleanup:
     --account NAME          Delete from specific account only
+    --yes                   Skip confirmation prompt
 
   Tunnel:
     --host HOST             Bind host (default: 127.0.0.1)
