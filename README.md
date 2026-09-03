@@ -95,7 +95,7 @@ Now configure your browser or application to use the proxy:
 | `list` | List all active proxies and show usage stats |
 | `tunnel` | Start the local proxy server |
 | `test` | Test connectivity of your proxies |
-| `cleanup` | Delete all workers from your account |
+| `cleanup` | Delete all workers from your account; use `--yes` to skip the confirmation prompt |
 
 ## 📖 Basic Usage
 
@@ -140,6 +140,7 @@ print(r.json()['origin'])  # Cloudflare Worker IP
 ./FlareTunnel test                    # Test workers
 ./FlareTunnel cleanup                 # Delete workers from ALL accounts
 ./FlareTunnel cleanup --account main  # Delete workers from 'main' only
+./FlareTunnel cleanup --account main --yes  # Delete workers without confirmation
 
 # Multi-Account Worker Creation
 ./FlareTunnel create --count 10 --distribute    # Auto-distribute based on quota
