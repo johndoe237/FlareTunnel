@@ -53,7 +53,7 @@ graph LR
 
 ### Build from Source
 ```bash
-git clone https://github.com/MorDavid/FlareTunnel.git
+git clone https://github.com/johndoe237/FlareTunnel.git
 cd FlareTunnel
 go build -o FlareTunnel FlareTunnel.go
 ```
