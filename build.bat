@@ -14,7 +14,7 @@ if errorlevel 1 (
 
 echo.
 echo 🏗️  Building for Windows...
-go build -ldflags="-s -w" -o flaretunnel.exe flaretunnel.go
+go build -ldflags="-s -w" -o flaretunnel.exe .
 if errorlevel 1 (
     echo ❌ Build failed
     pause
@@ -35,22 +35,22 @@ set /p REPLY="Build for other platforms? (y/N) "
 if /i "%REPLY%"=="y" (
     echo.
     echo 🌍 Building for multiple platforms...
-    
+
     echo   Building for Linux (amd64)...
     set GOOS=linux
     set GOARCH=amd64
-    go build -ldflags="-s -w" -o flaretunnel-linux-amd64 flaretunnel.go
-    
+    go build -ldflags="-s -w" -o flaretunnel-linux-amd64 .
+
     echo   Building for macOS (amd64)...
     set GOOS=darwin
     set GOARCH=amd64
-    go build -ldflags="-s -w" -o flaretunnel-macos-amd64 flaretunnel.go
-    
+    go build -ldflags="-s -w" -o flaretunnel-macos-amd64 .
+
     echo   Building for macOS (arm64)...
     set GOOS=darwin
     set GOARCH=arm64
-    go build -ldflags="-s -w" -o flaretunnel-macos-arm64 flaretunnel.go
-    
+    go build -ldflags="-s -w" -o flaretunnel-macos-arm64 .
+
     echo.
     echo ✅ Cross-compilation complete!
     echo.
