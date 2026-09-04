@@ -55,7 +55,7 @@ graph LR
 ```bash
 git clone https://github.com/johndoe237/FlareTunnel.git
 cd FlareTunnel
-go build -o FlareTunnel FlareTunnel.go
+go build -o FlareTunnel .
 ```
 
 ## 🚀 Usage
@@ -95,7 +95,30 @@ Now configure your browser or application to use the proxy:
 | `list` | List all active proxies and show usage stats |
 | `tunnel` | Start the local proxy server |
 | `test` | Test connectivity of your proxies |
-| `cleanup` | Delete all workers from your account; use `--yes` to skip the confirmation prompt |
+| `cleanup` | Delete all workers from your account; use `--account <NAME> --count <N> --yes` for bounded cleanup or `--yes` for historical full cleanup |
+
+## 🗑️ Cleanup
+
+### Bounded cleanup
+
+To delete at most a precise number of FlareTunnel Workers from one account, use:
+
+```bash
+./FlareTunnel cleanup --account main --count 20 --yes
+```
+
+`--count` selects only Workers that actually exist. If the account contains fewer than 20
+FlareTunnel Workers, only the existing Workers are deleted. The bounded form requires both
+`--account` and `--yes`, and never asks for interactive stdin input.
+
+### Historical full cleanup
+
+Without `--count`, the historical command continues to delete all FlareTunnel Workers from the
+selected account:
+
+```bash
+./FlareTunnel cleanup --account main --yes
+```
 
 ## 📖 Basic Usage
 
@@ -140,7 +163,8 @@ print(r.json()['origin'])  # Cloudflare Worker IP
 ./FlareTunnel test                    # Test workers
 ./FlareTunnel cleanup                 # Delete workers from ALL accounts
 ./FlareTunnel cleanup --account main  # Delete workers from 'main' only
-./FlareTunnel cleanup --account main --yes  # Delete workers without confirmation
+./FlareTunnel cleanup --account main --yes              # Delete all workers without confirmation
+./FlareTunnel cleanup --account main --count 20 --yes   # Delete at most 20 existing workers
 
 # Multi-Account Worker Creation
 ./FlareTunnel create --count 10 --distribute    # Auto-distribute based on quota

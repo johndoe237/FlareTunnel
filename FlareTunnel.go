@@ -279,13 +279,13 @@ func (c *CloudflareClient) CreateWorker(name string) (*Worker, error) {
 
 	var b bytes.Buffer
 	writer := multipartWriter(&b)
-	
+
 	metadata := map[string]string{
 		"body_part":   "script",
 		"main_module": "worker.js",
 	}
 	metadataJSON, _ := json.Marshal(metadata)
-	
+
 	writer.WriteField("metadata", string(metadataJSON))
 	writer.WriteField("script", WorkerScript)
 	contentType := writer.FormDataContentType()
@@ -437,9 +437,9 @@ func (c *CloudflareClient) GetAnalytics() (*Analytics, error) {
 	`
 
 	variables := map[string]interface{}{
-		"accountTag":     c.AccountID,
-		"datetimeStart":  dateStart,
-		"datetimeEnd":    dateEnd,
+		"accountTag":    c.AccountID,
+		"datetimeStart": dateStart,
+		"datetimeEnd":   dateEnd,
 	}
 
 	payload := map[string]interface{}{
@@ -639,12 +639,12 @@ func generateHostCert(hostname, caCertPath, caKeyPath string) (*tls.Certificate,
 // ====================================================================
 
 type FlareTunnel struct {
-	Config          *Config
-	Clients         map[string]*CloudflareClient
-	EndpointsFile   string
-	ConfigFile      string
-	workers         []*Worker
-	workersMutex    sync.RWMutex
+	Config        *Config
+	Clients       map[string]*CloudflareClient
+	EndpointsFile string
+	ConfigFile    string
+	workers       []*Worker
+	workersMutex  sync.RWMutex
 }
 
 func NewFlareTunnel(configFile string) (*FlareTunnel, error) {
@@ -880,12 +880,12 @@ func (ft *FlareTunnel) ListWorkers(verbose, checkStatus bool) error {
 
 	if checkStatus {
 		fmt.Printf("\n🔍 Checking status of %d worker(s)...\n", len(workers))
-		fmt.Println("This may take a few seconds...\n")
+		fmt.Println("This may take a few seconds...")
 	}
 
 	fmt.Println()
 	table := tablewriter.NewWriter(os.Stdout)
-	
+
 	// Build header based on flags
 	header := []string{"#", "Account", "Name"}
 	if verbose {
@@ -902,19 +902,19 @@ func (ft *FlareTunnel) ListWorkers(verbose, checkStatus bool) error {
 
 	for idx, worker := range workers {
 		row := []string{strconv.Itoa(idx), worker.ConfigAccountName, worker.Name}
-		
+
 		// Add verbose info (Created, Age)
 		if verbose {
 			createdStr := "Unknown"
 			ageStr := "Unknown"
-			
+
 			// Extract timestamp from worker name: flaretunnel-1764721536-kmoiok
 			re := regexp.MustCompile(`flaretunnel-(\d+)-`)
 			if matches := re.FindStringSubmatch(worker.Name); len(matches) > 1 {
 				if timestamp, err := strconv.ParseInt(matches[1], 10, 64); err == nil {
 					createdTime := time.Unix(timestamp, 0)
 					createdStr = createdTime.Format("2006-01-02 15:04:05")
-					
+
 					// Calculate age
 					age := time.Since(createdTime)
 					if age.Hours() < 1 {
@@ -926,13 +926,13 @@ func (ft *FlareTunnel) ListWorkers(verbose, checkStatus bool) error {
 					}
 				}
 			}
-			
+
 			row = append(row, createdStr, ageStr)
 		}
-		
+
 		// Add URL
 		row = append(row, worker.URL)
-		
+
 		// Add requests count
 		requests := "0"
 		if analytics, ok := allAnalytics[worker.ConfigAccountName]; ok && analytics.Success {
@@ -941,7 +941,7 @@ func (ft *FlareTunnel) ListWorkers(verbose, checkStatus bool) error {
 			}
 		}
 		row = append(row, requests)
-		
+
 		// Add status
 		if checkStatus {
 			// Test actual worker
@@ -950,7 +950,7 @@ func (ft *FlareTunnel) ListWorkers(verbose, checkStatus bool) error {
 			client := &http.Client{Timeout: 5 * time.Second}
 			resp, err := client.Get(testURL)
 			elapsed := time.Since(start)
-			
+
 			if err != nil {
 				row = append(row, "❌ Failed")
 			} else {
@@ -964,7 +964,7 @@ func (ft *FlareTunnel) ListWorkers(verbose, checkStatus bool) error {
 		} else {
 			row = append(row, "✅ Active")
 		}
-		
+
 		table.Append(row)
 	}
 
@@ -1031,7 +1031,7 @@ func (ft *FlareTunnel) TestWorkers(targetURL, method string) error {
 		fmt.Printf("\nTesting endpoint: %s\n", worker.Name)
 
 		testURL := worker.URL + "?url=" + url.QueryEscape(targetURL)
-		
+
 		client := &http.Client{Timeout: 30 * time.Second}
 		req, err := http.NewRequest(method, testURL, nil)
 		if err != nil {
@@ -1232,34 +1232,34 @@ func fileExists(path string) bool {
 // ====================================================================
 
 type ProxyServer struct {
-	Host                 string
-	Port                 int
-	Workers              []*Worker
-	CurrentWorkerIndex   int
-	RotationMode         string
-	Verbose              bool
-	AllowIPAccess        bool
-	CACertPath           string
-	CAKeyPath            string
-	BlacklistPatterns    []string
-	InlineBlockPatterns  []string
-	BlacklistStats       map[string]int
-	UpstreamProxy        string
-	UpstreamVerifySSL    bool
-	CacheCerts           bool
-	NoSSLIntercept       bool
-	mutex                sync.Mutex
-	certCache            map[string]*tls.Certificate
-	certMutex            sync.RWMutex
+	Host                string
+	Port                int
+	Workers             []*Worker
+	CurrentWorkerIndex  int
+	RotationMode        string
+	Verbose             bool
+	AllowIPAccess       bool
+	CACertPath          string
+	CAKeyPath           string
+	BlacklistPatterns   []string
+	InlineBlockPatterns []string
+	BlacklistStats      map[string]int
+	UpstreamProxy       string
+	UpstreamVerifySSL   bool
+	CacheCerts          bool
+	NoSSLIntercept      bool
+	mutex               sync.Mutex
+	certCache           map[string]*tls.Certificate
+	certMutex           sync.RWMutex
 }
 
 func NewProxyServer(host string, port int) *ProxyServer {
 	return &ProxyServer{
-		Host:              host,
-		Port:              port,
-		RotationMode:      "round-robin",
-		BlacklistStats:    make(map[string]int),
-		certCache:         make(map[string]*tls.Certificate),
+		Host:           host,
+		Port:           port,
+		RotationMode:   "round-robin",
+		BlacklistStats: make(map[string]int),
+		certCache:      make(map[string]*tls.Certificate),
 	}
 }
 
@@ -1785,8 +1785,8 @@ func sumMap(m map[string]int) int {
 
 // Simple multipart writer
 type simpleMultipartWriter struct {
-	buf       *bytes.Buffer
-	boundary  string
+	buf      *bytes.Buffer
+	boundary string
 }
 
 func multipartWriter(buf *bytes.Buffer) *simpleMultipartWriter {
@@ -2004,7 +2004,7 @@ func main() {
 
 		// If both flags provided, verbose already includes status check
 		if verbose && checkStatus {
-			fmt.Println("⚠️  Note: --verbose already includes live status check, --status flag is redundant\n")
+			fmt.Println("⚠️  Note: --verbose already includes live status check, --status flag is redundant")
 			// checkStatus is already covered by verbose, no need to set it
 		}
 
@@ -2087,22 +2087,59 @@ func main() {
 	case "cleanup":
 		accountName := ""
 		yes := false
+		count := -1
 
 		for i := 2; i < len(os.Args); i++ {
 			switch os.Args[i] {
 			case "--account":
-				if i+1 < len(os.Args) {
-					accountName = os.Args[i+1]
-					i++
+				if i+1 >= len(os.Args) {
+					fmt.Println("❌ Error: --account requires a value")
+					return
 				}
+				accountName = os.Args[i+1]
+				i++
+			case "--count":
+				if i+1 >= len(os.Args) {
+					fmt.Println("❌ Error: --count requires a non-negative integer")
+					return
+				}
+				parsed, parseErr := strconv.Atoi(os.Args[i+1])
+				if parseErr != nil || parsed < 0 {
+					fmt.Println("❌ Error: --count requires a non-negative integer")
+					return
+				}
+				count = parsed
+				i++
 			case "--yes":
 				yes = true
+			default:
+				fmt.Printf("❌ Error: unknown cleanup option: %s\n", os.Args[i])
+				return
+			}
+		}
+
+		if count >= 0 {
+			if accountName == "" {
+				fmt.Println("❌ Error: --count requires --account")
+				return
+			}
+			if !yes {
+				fmt.Println("❌ Error: bounded cleanup requires --yes")
+				return
 			}
 		}
 
 		ft, err := NewFlareTunnel("flaretunnel.json")
 		if err != nil {
 			fmt.Printf("❌ Configuration error: %v\n", err)
+			return
+		}
+
+		if count >= 0 {
+			fmt.Printf("\n🗑️  Cleaning up at most %d worker(s) from account: %s\n", count, accountName)
+			if err := ft.CleanupWorkersCount(accountName, count); err != nil {
+				fmt.Printf("❌ Cleanup failed: %v\n", err)
+			}
 			return
 		}
 
@@ -2275,6 +2312,7 @@ Examples:
   go run FlareTunnel.go cleanup
   go run FlareTunnel.go cleanup --account main
   go run FlareTunnel.go cleanup --account main --yes
+  go run FlareTunnel.go cleanup --account main --count 1 --yes
 
 Options:
   Create:
@@ -2299,6 +2337,7 @@ Options:
 
   Cleanup:
     --account NAME          Delete from specific account only
+    --count N               Delete at most N workers; requires --account and --yes
     --yes                   Skip confirmation prompt
 
   Tunnel:
@@ -2317,4 +2356,3 @@ Options:
 `
 	fmt.Println(help)
 }
-
