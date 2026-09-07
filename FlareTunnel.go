@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -1248,9 +1249,53 @@ type ProxyServer struct {
 	UpstreamVerifySSL   bool
 	CacheCerts          bool
 	NoSSLIntercept      bool
+	ProxyAuthBasic      string
 	mutex               sync.Mutex
 	certCache           map[string]*tls.Certificate
 	certMutex           sync.RWMutex
+}
+
+const proxyAuthBasicEnv = "AUTH_PROXY_BASIC"
+
+// ValidateProxyAuthBasic validates the already encoded Basic credential. The
+// decoded username and password are never logged or persisted.
+func ValidateProxyAuthBasic(value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is required and must not be empty", proxyAuthBasicEnv)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return fmt.Errorf("%s is not valid Base64", proxyAuthBasicEnv)
+	}
+	parts := strings.SplitN(string(decoded), ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("%s must encode non-empty username and password", proxyAuthBasicEnv)
+	}
+	return nil
+}
+
+func (ps *ProxyServer) authenticate(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get("Proxy-Authorization") != "Basic "+ps.ProxyAuthBasic {
+		w.Header().Set("Proxy-Authenticate", "Basic")
+		w.WriteHeader(http.StatusProxyAuthRequired)
+		_, _ = io.WriteString(w, "Proxy Authentication Required\n")
+		return false
+	}
+	return true
+}
+
+// Handler applies authentication before ordinary HTTP or CONNECT handling.
+func (ps *ProxyServer) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ps.authenticate(w, r) {
+			return
+		}
+		if r.Method == http.MethodConnect {
+			ps.HandleCONNECT(w, r)
+			return
+		}
+		ps.HandleHTTP(w, r)
+	})
 }
 
 func NewProxyServer(host string, port int) *ProxyServer {
@@ -1622,6 +1667,12 @@ func (ps *ProxyServer) HandleCONNECT(w http.ResponseWriter, r *http.Request) {
 }
 
 func (ps *ProxyServer) Start(blacklistFile string) error {
+	proxyAuthBasic := os.Getenv(proxyAuthBasicEnv)
+	if err := ValidateProxyAuthBasic(proxyAuthBasic); err != nil {
+		return err
+	}
+	ps.ProxyAuthBasic = proxyAuthBasic
+
 	// Setup SSL
 	ps.CACertPath = "flaretunnel_ca.crt"
 	ps.CAKeyPath = "flaretunnel_ca.key"
@@ -1716,6 +1767,9 @@ func (ps *ProxyServer) Start(blacklistFile string) error {
 
 	// Start server
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ps.authenticate(w, r) {
+			return
+		}
 		if r.Method == http.MethodConnect {
 			ps.HandleCONNECT(w, r)
 		} else {

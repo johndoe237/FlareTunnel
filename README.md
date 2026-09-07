@@ -60,6 +60,23 @@ go build -o FlareTunnel .
 
 ## 🚀 Usage
 
+### Proxy authentication
+
+The local proxy requires HTTP Basic authentication for every request, including
+`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`, and `CONNECT`.
+Set `AUTH_PROXY_BASIC` to the Base64 encoding of `username:password` before
+starting the tunnel:
+
+```bash
+export AUTH_PROXY_BASIC="dXNlcjE6cGFzczE=" # Base64("user1:pass1")
+./FlareTunnel tunnel
+```
+
+Clients must send `Proxy-Authorization: Basic <AUTH_PROXY_BASIC>`. Missing or
+incorrect credentials receive `407 Proxy Authentication Required` with a
+`Proxy-Authenticate: Basic` challenge. Authentication is checked before
+forwarding or establishing a `CONNECT` tunnel.
+
 ### 1. Configuration
 First, set up your Cloudflare credentials. You'll need your Account ID and an API Token (with "Edit Cloudflare Workers" permission).
 
@@ -234,4 +251,3 @@ Website: Will break in browser (automation tools only)
 This tool is for educational and research purposes only. Please respect Cloudflare's Terms of Service. The authors are not responsible for any misuse of this tool.
 
 **Made with ❤️ for the security and automation community**
-
