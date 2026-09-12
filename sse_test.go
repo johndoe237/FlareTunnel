@@ -71,3 +71,12 @@ func TestStreamResponseFlushesSSEChunksImmediately(t *testing.T) {
 		t.Fatalf("remaining stream = %q", remaining)
 	}
 }
+
+func TestWorkerScriptRelaysResponseBodyWithoutParsing(t *testing.T) {
+	if !strings.Contains(WorkerScript, "return new Response(response.body") {
+		t.Fatal("WorkerScript does not return the upstream response body directly")
+	}
+	if strings.Contains(WorkerScript, "JSON.parse") || strings.Contains(WorkerScript, "response.body.getReader") {
+		t.Fatal("WorkerScript parses or manually consumes the upstream response body")
+	}
+}
