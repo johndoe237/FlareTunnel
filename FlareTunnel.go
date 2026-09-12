@@ -1475,6 +1475,11 @@ func (ps *ProxyServer) HandleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Send request with optional upstream proxy
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: !ps.UpstreamVerifySSL},
+		DialContext: (&net.Dialer{
+			Timeout: 30 * time.Second,
+		}).DialContext,
+		// Bound response headers, but allow long-lived SSE bodies.
+		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
 	if ps.UpstreamProxy != "" {
@@ -1485,7 +1490,6 @@ func (ps *ProxyServer) HandleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &http.Client{
-		Timeout:   30 * time.Second,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
