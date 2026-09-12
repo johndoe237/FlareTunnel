@@ -1505,7 +1505,7 @@ func (ps *ProxyServer) HandleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	streamResponse(w, resp.Body)
 
 	if ps.Verbose {
 		status := "✅"
@@ -1513,6 +1513,28 @@ func (ps *ProxyServer) HandleHTTP(w http.ResponseWriter, r *http.Request) {
 			status = "⚠️"
 		}
 		fmt.Printf("   ↑ %s %d\n", status, resp.StatusCode)
+	}
+}
+
+// streamResponse forwards response chunks as they arrive. This explicit flush
+// is required for SSE and other long-lived streaming responses: io.Copy alone
+// does not guarantee that each upstream chunk reaches the client promptly.
+func streamResponse(w http.ResponseWriter, body io.Reader) {
+	flusher, canFlush := w.(http.Flusher)
+	buffer := make([]byte, 32*1024)
+	for {
+		n, err := body.Read(buffer)
+		if n > 0 {
+			if _, writeErr := w.Write(buffer[:n]); writeErr != nil {
+				return
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			return
+		}
 	}
 }
 
