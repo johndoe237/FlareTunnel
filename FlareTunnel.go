@@ -1689,7 +1689,9 @@ func (ps *ProxyServer) HandleCONNECT(w http.ResponseWriter, r *http.Request) {
 // streamHTTPResponse writes a de-framed net/http response to a raw HTTP/1.1
 // connection. net/http has already removed upstream chunk framing, so when no
 // Content-Length is available we add chunk framing for the downstream client.
-// This preserves progressive SSE delivery over CONNECT.
+// This preserves progressive SSE delivery over CONNECT. The connection is the
+// hijacked net.Conn itself, not an http.ResponseWriter: there is no HTTP
+// response buffer to flush, and each Write emits directly to the TLS socket.
 func streamHTTPResponse(conn io.Writer, resp *http.Response) error {
 	if _, err := fmt.Fprintf(conn, "HTTP/1.1 %s\r\n", resp.Status); err != nil {
 		return err

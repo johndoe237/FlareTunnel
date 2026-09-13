@@ -1,14 +1,57 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/pem"
+	"fmt"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func createTestCA(t *testing.T, dir string) (string, string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-ca"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath := filepath.Join(dir, "ca.crt")
+	keyPath := filepath.Join(dir, "ca.key")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return certPath, keyPath
+}
 
 func TestStreamHTTPResponseFramesUnknownLengthBody(t *testing.T) {
 	resp := &http.Response{
@@ -101,5 +144,108 @@ func TestWorkerScriptRelaysResponseBodyWithoutParsing(t *testing.T) {
 	}
 	if !strings.Contains(WorkerScript, "hopByHopHeaders") || strings.Contains(WorkerScript, "const allowedHeaders") {
 		t.Fatal("WorkerScript does not transparently preserve provider-specific request headers")
+	}
+}
+
+func TestCONNECTStreamsTwentySSEEventsProgressively(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("worker response does not support flushing")
+			return
+		}
+		for i := 0; i < 20; i++ {
+			_, _ = fmt.Fprintf(w, "data: %d\n\n", i)
+			flusher.Flush()
+			time.Sleep(200 * time.Millisecond)
+		}
+	}))
+	defer worker.Close()
+
+	dir := t.TempDir()
+	certPath, keyPath := createTestCA(t, dir)
+	proxy := NewProxyServer("127.0.0.1", 0)
+	proxy.CACertPath = certPath
+	proxy.CAKeyPath = keyPath
+	proxy.ProxyAuthBasic = base64.StdEncoding.EncodeToString([]byte("user:pass"))
+	proxy.UpstreamVerifySSL = false
+	proxy.Workers = []*Worker{{URL: worker.URL}}
+	proxyServer := httptest.NewServer(proxy.Handler())
+	defer proxyServer.Close()
+
+	proxyAddress := strings.TrimPrefix(proxyServer.URL, "http://")
+	conn, err := net.Dial("tcp", proxyAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := fmt.Fprintf(conn, "CONNECT api.example.test:443 HTTP/1.1\r\nHost: api.example.test:443\r\nProxy-Authorization: Basic %s\r\n\r\n", proxy.ProxyAuthBasic); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(line, "200") {
+		t.Fatalf("CONNECT response = %q", line)
+	}
+	for {
+		header, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header == "\r\n" || header == "\n" {
+			break
+		}
+	}
+	tlsConn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true, ServerName: "api.example.test"})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	defer tlsConn.Close()
+	if _, err := fmt.Fprint(tlsConn, "GET /v1/chat/completions HTTP/1.1\r\nHost: api.example.test\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	tlsReader := bufio.NewReader(tlsConn)
+	response, err := http.ReadResponse(tlsReader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("upstream status = %s", response.Status)
+	}
+	bodyReader := bufio.NewReader(response.Body)
+	start := time.Now()
+	last := start
+	for i := 0; i < 20; i++ {
+		var event strings.Builder
+		for {
+			part, readErr := bodyReader.ReadString('\n')
+			if readErr != nil {
+				t.Fatalf("event %d read: %v", i, readErr)
+			}
+			event.WriteString(part)
+			if event.Len() >= 2 && strings.HasSuffix(event.String(), "\n\n") {
+				break
+			}
+		}
+		now := time.Now()
+		if i > 0 {
+			interval := now.Sub(last)
+			if interval < 50*time.Millisecond || interval > 800*time.Millisecond {
+				t.Fatalf("event %d interval = %s, want approximately 200ms", i, interval)
+			}
+		}
+		last = now
+		if !strings.Contains(event.String(), fmt.Sprintf("data: %d", i)) {
+			t.Fatalf("event %d payload = %q", i, event.String())
+		}
+	}
+	if elapsed := time.Since(start); elapsed < 3*time.Second {
+		t.Fatalf("all events arrived in %s; expected progressive delivery over approximately 4s", elapsed)
 	}
 }
