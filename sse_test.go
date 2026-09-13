@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,25 @@ import (
 	"testing"
 	"time"
 )
+
+func TestStreamHTTPResponseFramesUnknownLengthBody(t *testing.T) {
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Status:        "200 OK",
+		Header:        make(http.Header),
+		ContentLength: -1,
+		Body:          io.NopCloser(strings.NewReader("data: token\n\n")),
+	}
+	resp.Header.Set("Content-Type", "text/event-stream")
+	var got bytes.Buffer
+	if err := streamHTTPResponse(&got, resp); err != nil {
+		t.Fatalf("streamHTTPResponse() error = %v", err)
+	}
+	want := "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n" + "d\r\ndata: token\n\n\r\n0\r\n\r\n"
+	if got.String() != want {
+		t.Fatalf("response = %q, want %q", got.String(), want)
+	}
+}
 
 type chunkedReader struct {
 	chunks chan string
@@ -78,5 +98,8 @@ func TestWorkerScriptRelaysResponseBodyWithoutParsing(t *testing.T) {
 	}
 	if strings.Contains(WorkerScript, "JSON.parse") || strings.Contains(WorkerScript, "response.body.getReader") {
 		t.Fatal("WorkerScript parses or manually consumes the upstream response body")
+	}
+	if !strings.Contains(WorkerScript, "hopByHopHeaders") || strings.Contains(WorkerScript, "const allowedHeaders") {
+		t.Fatal("WorkerScript does not transparently preserve provider-specific request headers")
 	}
 }

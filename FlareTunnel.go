@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -109,14 +110,16 @@ function getTargetUrl(url, headers) {
 
 function createProxyRequest(request, targetURL) {
   const proxyHeaders = new Headers()
-  const allowedHeaders = [
-    'accept', 'accept-language', 'accept-encoding', 'authorization',
-    'cache-control', 'content-type', 'origin', 'referer', 'user-agent'
-  ]
 
-  // Copy allowed headers
+  // Preserve provider-specific LLM headers (for example x-api-key,
+  // anthropic-version, anthropic-beta, OpenAI beta headers, and Google API
+  // headers). Only hop-by-hop and proxy-routing headers are removed.
+  const hopByHopHeaders = new Set([
+    'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+    'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'x-target-url'
+  ])
   for (const [key, value] of request.headers) {
-    if (allowedHeaders.includes(key.toLowerCase())) {
+    if (!hopByHopHeaders.has(key.toLowerCase())) {
       proxyHeaders.set(key, value)
     }
   }
@@ -512,60 +515,42 @@ func (c *CloudflareClient) GetAnalytics() (*Analytics, error) {
 // SSL CERTIFICATE GENERATION
 // ====================================================================
 
-func generateCACert(certPath, keyPath string) error {
-	if _, err := os.Stat(certPath); err == nil {
-		if _, err := os.Stat(keyPath); err == nil {
-			return nil
-		}
-	}
-
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+func validateCAPair(certPath, keyPath string) error {
+	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot read certificate: %w", err)
 	}
-
-	notBefore := time.Now()
-	notAfter := notBefore.Add(3650 * 24 * time.Hour)
-
-	serialNumber, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-
-	template := x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			Country:      []string{"US"},
-			Province:     []string{"CA"},
-			Locality:     []string{"Local"},
-			Organization: []string{"FlareTunnel"},
-			CommonName:   "FlareTunnel CA",
-		},
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		IsCA:                  true,
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil {
+		return fmt.Errorf("certificate is not valid PEM")
 	}
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
-		return err
+		return fmt.Errorf("certificate is invalid: %w", err)
 	}
-
-	certOut, err := os.Create(certPath)
+	if !cert.IsCA {
+		return fmt.Errorf("certificate is not a CA")
+	}
+	now := time.Now()
+	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+		return fmt.Errorf("certificate is not currently valid")
+	}
+	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot read private key: %w", err)
 	}
-	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
-	certOut.Close()
-
-	keyOut, err := os.Create(keyPath)
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil {
+		return fmt.Errorf("private key is not valid PEM")
+	}
+	privateKey, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
 	if err != nil {
-		return err
+		return fmt.Errorf("private key is invalid: %w", err)
 	}
-	pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
-	keyOut.Close()
-
-	fmt.Printf("✓ Generated CA certificate: %s\n", certPath)
+	publicKey, ok := cert.PublicKey.(*rsa.PublicKey)
+	if !ok || publicKey.N.Cmp(privateKey.N) != 0 || publicKey.E != privateKey.E {
+		return fmt.Errorf("private key does not match certificate")
+	}
 	return nil
 }
 
@@ -1257,6 +1242,11 @@ type ProxyServer struct {
 
 const proxyAuthBasicEnv = "AUTH_PROXY_BASIC"
 
+const (
+	caCertFileEnv = "FLARETUNNEL_CA_CERT_FILE"
+	caKeyFileEnv  = "FLARETUNNEL_CA_KEY_FILE"
+)
+
 // ValidateProxyAuthBasic validates the already encoded Basic credential. The
 // decoded username and password are never logged or persisted.
 func ValidateProxyAuthBasic(value string) error {
@@ -1459,7 +1449,7 @@ func (ps *ProxyServer) HandleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create proxy request
-	proxyReq, err := http.NewRequest(r.Method, proxyURL, r.Body)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, proxyURL, r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1467,7 +1457,8 @@ func (ps *ProxyServer) HandleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Copy headers
 	for k, v := range r.Header {
-		if !strings.EqualFold(k, "Host") && !strings.EqualFold(k, "Connection") {
+		if !strings.EqualFold(k, "Host") && !strings.EqualFold(k, "Connection") &&
+			!strings.EqualFold(k, "Content-Length") && !strings.EqualFold(k, "Transfer-Encoding") {
 			proxyReq.Header[k] = v
 		}
 	}
@@ -1633,14 +1624,17 @@ func (ps *ProxyServer) HandleCONNECT(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("      ↓ via Worker: %s\n", workerURL)
 	}
 
-	// Create proxy request
-	proxyReq, err := http.NewRequest(req.Method, proxyURL, req.Body)
+	// Create proxy request tied to the client request lifetime.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	proxyReq, err := http.NewRequestWithContext(ctx, req.Method, proxyURL, req.Body)
 	if err != nil {
 		return
 	}
 
 	for k, v := range req.Header {
-		if !strings.EqualFold(k, "Host") && !strings.EqualFold(k, "Connection") {
+		if !strings.EqualFold(k, "Host") && !strings.EqualFold(k, "Connection") &&
+			!strings.EqualFold(k, "Content-Length") && !strings.EqualFold(k, "Transfer-Encoding") {
 			proxyReq.Header[k] = v
 		}
 	}
@@ -1648,6 +1642,12 @@ func (ps *ProxyServer) HandleCONNECT(w http.ResponseWriter, r *http.Request) {
 	// Setup transport with optional upstream proxy
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: !ps.UpstreamVerifySSL},
+		DialContext: (&net.Dialer{
+			Timeout: 30 * time.Second,
+		}).DialContext,
+		// Bound connection establishment and response headers, but permit
+		// long-lived LLM/SSE response bodies.
+		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
 	if ps.UpstreamProxy != "" {
@@ -1658,7 +1658,6 @@ func (ps *ProxyServer) HandleCONNECT(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &http.Client{
-		Timeout:   30 * time.Second,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -1671,17 +1670,12 @@ func (ps *ProxyServer) HandleCONNECT(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Write response
-	tlsConn.Write([]byte(fmt.Sprintf("HTTP/1.1 %d %s\r\n", resp.StatusCode, resp.Status)))
-
-	for k, v := range resp.Header {
-		for _, vv := range v {
-			tlsConn.Write([]byte(fmt.Sprintf("%s: %s\r\n", k, vv)))
+	if err := streamHTTPResponse(tlsConn, resp); err != nil {
+		cancel()
+		if ps.Verbose {
+			fmt.Printf("      ⚠ response stream ended: %v\n", err)
 		}
 	}
-
-	tlsConn.Write([]byte("\r\n"))
-	io.Copy(tlsConn, resp.Body)
 
 	if ps.Verbose {
 		status := "✅"
@@ -1692,6 +1686,71 @@ func (ps *ProxyServer) HandleCONNECT(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// streamHTTPResponse writes a de-framed net/http response to a raw HTTP/1.1
+// connection. net/http has already removed upstream chunk framing, so when no
+// Content-Length is available we add chunk framing for the downstream client.
+// This preserves progressive SSE delivery over CONNECT.
+func streamHTTPResponse(conn io.Writer, resp *http.Response) error {
+	if _, err := fmt.Fprintf(conn, "HTTP/1.1 %s\r\n", resp.Status); err != nil {
+		return err
+	}
+	hasLength := resp.ContentLength >= 0
+	for k, values := range resp.Header {
+		if strings.EqualFold(k, "Transfer-Encoding") || strings.EqualFold(k, "Connection") {
+			continue
+		}
+		for _, value := range values {
+			if _, err := fmt.Fprintf(conn, "%s: %s\r\n", k, value); err != nil {
+				return err
+			}
+		}
+	}
+	if hasLength {
+		if _, err := fmt.Fprintf(conn, "Content-Length: %d\r\n", resp.ContentLength); err != nil {
+			return err
+		}
+	} else if _, err := io.WriteString(conn, "Transfer-Encoding: chunked\r\n"); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(conn, "\r\n"); err != nil {
+		return err
+	}
+	if resp.Body == nil {
+		return nil
+	}
+	buffer := make([]byte, 32*1024)
+	for {
+		n, readErr := resp.Body.Read(buffer)
+		if n > 0 {
+			if hasLength {
+				if _, err := conn.Write(buffer[:n]); err != nil {
+					return err
+				}
+			} else {
+				if _, err := fmt.Fprintf(conn, "%x\r\n", n); err != nil {
+					return err
+				}
+				if _, err := conn.Write(buffer[:n]); err != nil {
+					return err
+				}
+				if _, err := io.WriteString(conn, "\r\n"); err != nil {
+					return err
+				}
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				if !hasLength {
+					_, err := io.WriteString(conn, "0\r\n\r\n")
+					return err
+				}
+				return nil
+			}
+			return readErr
+		}
+	}
+}
+
 func (ps *ProxyServer) Start(blacklistFile string) error {
 	proxyAuthBasic := os.Getenv(proxyAuthBasicEnv)
 	if err := ValidateProxyAuthBasic(proxyAuthBasic); err != nil {
@@ -1699,17 +1758,21 @@ func (ps *ProxyServer) Start(blacklistFile string) error {
 	}
 	ps.ProxyAuthBasic = proxyAuthBasic
 
-	// Setup SSL
-	ps.CACertPath = "flaretunnel_ca.crt"
-	ps.CAKeyPath = "flaretunnel_ca.key"
-
+	// Production deployments must provide the reviewed persistent CA pair.
+	// Do not generate a substitute CA: clients trust the public certificate
+	// distributed by omni-boot.
 	if !ps.NoSSLIntercept {
-		if err := generateCACert(ps.CACertPath, ps.CAKeyPath); err != nil {
-			fmt.Printf("⚠️  SSL setup failed: %v\n", err)
-			ps.CACertPath = ""
+		ps.CACertPath = strings.TrimSpace(os.Getenv(caCertFileEnv))
+		ps.CAKeyPath = strings.TrimSpace(os.Getenv(caKeyFileEnv))
+		if ps.CACertPath == "" || ps.CAKeyPath == "" {
+			return fmt.Errorf("%s and %s are required when SSL interception is enabled", caCertFileEnv, caKeyFileEnv)
+		}
+		if err := validateCAPair(ps.CACertPath, ps.CAKeyPath); err != nil {
+			return fmt.Errorf("FlareTunnel CA validation failed: %w", err)
 		}
 	} else {
 		ps.CACertPath = ""
+		ps.CAKeyPath = ""
 	}
 
 	// Load blacklist
