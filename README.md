@@ -263,3 +263,9 @@ Cette architecture permet à FlareTunnel de relayer les requêtes HTTPS d’Omni
 Les certificats de domaine générés par FlareTunnel sont valides pendant un an. La rotation du CA racine doit être planifiée comme une opération coordonnée : générer un nouveau CA, déployer le nouveau certificat public dans `omni-boot`, injecter la nouvelle clé dans le manager, puis redémarrer les deux services. Le code ne publie pas la clé privée et ne journalise pas son contenu.
 
 Le chemin `CONNECT` utilise un délai limité pour la connexion et les headers upstream, mais aucun délai global pour le body. Les événements SSE sont lus par blocs disponibles et chaque bloc est immédiatement écrit sur la connexion TLS hijackée. Comme cette connexion est un `net.Conn` et non un `http.ResponseWriter`, aucun appel `Flush()` séparé n’est nécessaire : il n’existe pas de buffer HTTP intermédiaire à vider. Le test d’intégration CONNECT vérifie vingt événements SSE espacés d’environ 200 millisecondes sur une durée d’environ quatre secondes.
+
+## TLS de transport du listener proxy
+
+FlareTunnel peut écouter directement en TLS de transport lorsque `FLARETUNNEL_TRANSPORT_CERT` et `FLARETUNNEL_TRANSPORT_KEY` désignent un certificat serveur éphémère et sa clé privée. `FLARETUNNEL_TLS_SAN` doit contenir au moins un nom DNS ou une adresse IP valide, séparés par des espaces. `0.0.0.0` et `::` ne sont pas des identités SAN valides. HTTP proxy, `CONNECT`, TLS MITM et streaming restent dans cette session TLS.
+
+Ce mode est activé par le déploiement séparé de FlareTunnel-Manager. Le mode TCP/HTTP reste disponible lorsque ces variables sont absentes. La clé privée du CA transport n’est jamais fournie à FlareTunnel.

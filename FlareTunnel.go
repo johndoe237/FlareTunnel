@@ -1220,6 +1220,9 @@ func fileExists(path string) bool {
 type ProxyServer struct {
 	Host                string
 	Port                int
+	TransportCertPath   string
+	TransportKeyPath    string
+	TransportSAN        string
 	Workers             []*Worker
 	CurrentWorkerIndex  int
 	RotationMode        string
@@ -1777,6 +1780,22 @@ func (ps *ProxyServer) Start(blacklistFile string) error {
 		ps.CAKeyPath = ""
 	}
 
+	ps.TransportCertPath = strings.TrimSpace(os.Getenv(transportCertFileEnv))
+	ps.TransportKeyPath = strings.TrimSpace(os.Getenv(transportKeyFileEnv))
+	ps.TransportSAN = strings.TrimSpace(os.Getenv("FLARETUNNEL_TLS_SAN"))
+	transportTLS := ps.TransportCertPath != "" || ps.TransportKeyPath != ""
+	if transportTLS {
+		if _, _, err := parseTransportSANs(ps.TransportSAN); err != nil {
+			return err
+		}
+		if _, err := loadTransportCertificate(ps.TransportCertPath, ps.TransportKeyPath); err != nil {
+			return err
+		}
+		if err := validateTransportCertificateSAN(ps.TransportCertPath, ps.TransportSAN); err != nil {
+			return err
+		}
+	}
+
 	// Load blacklist
 	ps.LoadBlacklist(blacklistFile)
 
@@ -1856,24 +1875,27 @@ func (ps *ProxyServer) Start(blacklistFile string) error {
 	fmt.Println(strings.Repeat("=", 80))
 	fmt.Println()
 
-	// Start server
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !ps.authenticate(w, r) {
-			return
-		}
-		if r.Method == http.MethodConnect {
-			ps.HandleCONNECT(w, r)
-		} else {
-			ps.HandleHTTP(w, r)
-		}
-	})
-
 	server := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", ps.Host, ps.Port),
-		Handler: handler,
+		Handler: ps.Handler(),
 	}
-
-	return server.ListenAndServe()
+	if !transportTLS {
+		return server.ListenAndServe()
+	}
+	cert, err := loadTransportCertificate(ps.TransportCertPath, ps.TransportKeyPath)
+	if err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return fmt.Errorf("cannot listen for transport TLS: %w", err)
+	}
+	tlsListener := tls.NewListener(listener, &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+		NextProtos:   []string{"http/1.1"},
+	})
+	return server.Serve(tlsListener)
 }
 
 // ====================================================================
