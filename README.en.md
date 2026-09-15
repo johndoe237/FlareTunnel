@@ -1,76 +1,188 @@
+<div align="center">
+
+<a href="README.en.md"><img src="logo.png" alt="FlareTunnel" width="260"></a>
+
 # FlareTunnel
 
-[Version française](README.md)
+**Cloudflare Workers HTTP/HTTPS proxy for egress rotation, CONNECT tunneling, and long-lived streaming.**
 
-FlareTunnel is an HTTP/HTTPS proxy that routes requests through Cloudflare Workers. It supports Worker rotation, multiple Cloudflare accounts, proxy authentication, HTTP passthrough, the `CONNECT` method, optional TLS MITM interception, and long-lived SSE responses.
+[![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://developers.cloudflare.com/workers/)
+[![TLS](https://img.shields.io/badge/TLS-transport%20%2B%20MITM-2F80ED)](#tls-and-https-connect)
+[![License](https://img.shields.io/badge/license-non--commercial-orange)](#license-and-responsibility)
 
-> FlareTunnel is a proxy component. The recommended production deployment uses `FlareTunnel-Manager`, which supplies the binary, certificates, and secrets at runtime.
+**[Français](README.md) · English**
+
+</div>
+
+FlareTunnel is a local and deployable proxy that routes requests through Cloudflare Workers. It provides one HTTP proxy entry point, distributes requests across multiple Workers, enforces Basic authentication, and preserves SSE and LLM response streaming.
 
 ## Architecture
 
-```text
-Client / OmniRoute
-        │
-        │ HTTP proxy or HTTPS transport proxy
-        ▼
-FlareTunnel
-        │  CONNECT + optional TLS MITM
-        ▼
-Cloudflare Worker
-        │
-        ▼
-Provider or target website
+```mermaid
+graph LR
+    C[HTTP/HTTPS client] -->|HTTP proxy or transport TLS| P[FlareTunnel]
+    P -->|Rotation| R{Worker rotator}
+    R --> W1[Cloudflare Worker 1]
+    R --> W2[Cloudflare Worker 2]
+    R --> W3[Cloudflare Worker N]
+    W1 --> T[Target website or API]
+    W2 --> T
+    W3 --> T
 ```
 
-Transport TLS and MITM TLS are separate layers. Transport TLS protects the connection between the client and the proxy listener. MITM TLS presents the client with a temporary certificate for the target domain, signed by the MITM CA. FlareTunnel then creates its own HTTPS connection to the Worker.
+The `CONNECT` path works with HTTPS clients. When TLS interception is enabled, FlareTunnel establishes an explicit MITM tunnel: the client trusts the FlareTunnel public CA, and FlareTunnel creates a separate HTTPS connection to the Worker. The upstream body is forwarded without being interpreted.
 
-## Features
+## Core capabilities
 
-- Random or round-robin Worker rotation.
-- Multiple Cloudflare account support.
-- Standard HTTP proxy and HTTPS tunneling with `CONNECT`.
-- Mandatory `Proxy-Authorization: Basic` authentication.
-- Optional transport TLS directly in FlareTunnel.
-- Optional TLS MITM for HTTPS requests.
-- Progressive forwarding of SSE bodies and long LLM responses.
-- Connection and upstream-header deadlines without a global SSE-body timeout.
-- Minimal, full, and aggressive blocklists.
+- **Worker rotation** in `random` or `round-robin` mode.
+- **Multiple Cloudflare accounts** with optional quota-aware distribution.
+- **HTTP and HTTPS proxying** for `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`, and `CONNECT`.
+- **Mandatory Basic authentication** before forwarding or tunnel establishment.
+- **Optional transport TLS** on the proxy listener.
+- **Optional TLS MITM** for HTTPS interception.
+- **SSE and LLM streaming** with progressive chunk forwarding and no global body timeout.
+- **Built-in blocklists** for reducing Worker request consumption.
+- **Worker analytics and connectivity tests** per Worker and account.
+- **Configuration export/import** for controlled backups.
 
-## Local installation
+## Requirements
+
+- Go 1.22 or later.
+- One or more Cloudflare accounts with an API token authorized to manage Workers.
+- A public MITM CA certificate and private key when HTTPS interception is enabled.
+- A transport server certificate and key when the listener must accept TLS directly.
+
+## Installation and build
 
 ```bash
 git clone https://github.com/johndoe237/FlareTunnel.git
 cd FlareTunnel
-go build -o flaretunnel .
+go mod download
+go build -ldflags="-s -w" -o flaretunnel .
 ```
 
-Go 1.21 or later is recommended.
-
-## Proxy configuration
-
-Proxy authentication is mandatory. `AUTH_PROXY_BASIC` contains the Base64 encoding of `username:password`.
+The `build.sh` script builds the current platform and offers cross-compilation for Linux, Windows, and macOS.
 
 ```bash
-export AUTH_PROXY_BASIC="dXNlcjE6cGFzczE="
+./build.sh
 ```
 
-This value represents `user1:pass1`. It must not be confused with a plaintext password.
+## Cloudflare configuration
+
+Use `config` to configure Cloudflare accounts interactively:
+
+```bash
+./flaretunnel config
+```
+
+The local configuration stores account credentials and identifiers used by management commands. Treat it as a secret: never commit it and protect its filesystem permissions.
+
+### Create Workers
+
+```bash
+./flaretunnel create --count 5
+./flaretunnel create --count 10 --distribute
+./flaretunnel create --count 3 --account main
+```
+
+`--distribute` spreads creation across available accounts. `--account` limits the operation to one account.
+
+### List and test Workers
+
+```bash
+./flaretunnel list
+./flaretunnel list --verbose
+./flaretunnel list --status
+./flaretunnel test
+./flaretunnel test --url https://httpbin.org/ip
+./flaretunnel test --url https://example.com --method POST
+```
+
+`list --verbose` includes details and live status. `list --status` focuses on response times.
+
+### Export and restore
+
+```bash
+./flaretunnel export --output my_backup.json
+./flaretunnel import --input my_backup.json
+./flaretunnel import --input my_backup.json --merge
+```
+
+Review backups before transferring them. They may contain Cloudflare credentials.
+
+### Delete Workers
+
+The bounded form is recommended:
+
+```bash
+./flaretunnel cleanup --account main --count 20 --yes
+```
+
+This deletes at most 20 existing Workers from the `main` account. For the historical full-cleanup behavior:
+
+```bash
+./flaretunnel cleanup --account main --yes
+```
+
+The bounded form requires `--account`, `--count`, and `--yes`. It does not read interactive input and never deletes more than the requested limit.
+
+## Start the proxy
 
 ### Local HTTP mode
 
-Local HTTP mode is enabled when the transport TLS variables are absent.
-
 ```bash
-./flaretunnel tunnel \
-  --host 127.0.0.1 \
-  --port 8080 \
-  --mode round-robin \
-  --blacklist blacklist-minimal.txt
+export AUTH_PROXY_BASIC="dXNlcjE6cGFzczE=" # Base64("user1:pass1")
+./flaretunnel tunnel --verbose
 ```
 
-### TLS MITM for `CONNECT`
+The proxy listens on `127.0.0.1:8080` by default. Configure clients as follows:
 
-To intercept HTTPS connections, FlareTunnel receives the public certificate and private key of the MITM CA through file paths. The private key must never be committed or copied into a client image.
+```text
+HTTP proxy  : http://127.0.0.1:8080
+HTTPS proxy : http://127.0.0.1:8080
+```
+
+The client must send:
+
+```http
+Proxy-Authorization: Basic dXNlcjE6cGFzczE=
+```
+
+Missing or invalid credentials receive `407 Proxy Authentication Required` with a `Proxy-Authenticate: Basic` challenge.
+
+### Tunnel options
+
+```bash
+./flaretunnel tunnel --verbose
+./flaretunnel tunnel --workers 0,1,2 --mode random
+./flaretunnel tunnel --port 9090 --blacklist blacklist.txt
+./flaretunnel tunnel --upstream-proxy http://127.0.0.1:8080 --verbose
+./flaretunnel tunnel --no-ssl-intercept
+./flaretunnel tunnel --cache-certs
+```
+
+Available options:
+
+| Option | Description |
+| --- | --- |
+| `--host` | Listen address. Default: `127.0.0.1`. |
+| `--port` | Listen port. Default: `8080`. |
+| `--workers` | Worker indexes, for example `0,1,2`. |
+| `--mode` | `random` or `round-robin`. |
+| `--blacklist` | Blocklist file to use. |
+| `--upstream-proxy` | Optional upstream proxy. |
+| `--upstream-verify-ssl` | Enable upstream proxy TLS verification. |
+| `--cache-certs` | Keep the MITM certificate cache. |
+| `--no-ssl-intercept` | Disable TLS MITM interception. |
+| `--block` | Enable configured blocking. |
+| `--unsafe` | Explicitly reserved for test environments. |
+
+## TLS and HTTPS CONNECT
+
+### TLS MITM
+
+Set the public certificate and private key paths for the MITM CA:
 
 ```bash
 export FLARETUNNEL_MITM_CA_CERT=/runtime/Flaretunnel-MITM-CA.crt
@@ -78,102 +190,106 @@ export FLARETUNNEL_MITM_CA_KEY=/runtime/Flaretunnel-MITM-CA.key
 ./flaretunnel tunnel --port 8080
 ```
 
-The client must trust the public `Flaretunnel-MITM-CA.crt` certificate.
+Clients should install only `Flaretunnel-MITM-CA.crt` in their trust store. The private key must never be distributed to clients.
+
+Domain certificates are cached only when `--cache-certs` is used. Protect the CA private key with `0600` permissions.
 
 ### Transport TLS listener
 
-The listener accepts a TLS connection when all of the following variables are set:
+To protect the connection between a client and the proxy, set:
 
 ```bash
 export FLARETUNNEL_TRANSPORT_CERT=/runtime/Flaretunnel-Transport.crt
 export FLARETUNNEL_TRANSPORT_KEY=/runtime/Flaretunnel-Transport.key
 export FLARETUNNEL_TLS_SAN="proxy.example.com 203.0.113.42"
-./flaretunnel tunnel --port 8080
+./flaretunnel tunnel --host 0.0.0.0 --port 8080
 ```
 
-`FLARETUNNEL_TLS_SAN` accepts DNS names, IPv4 addresses, and IPv6 addresses separated by spaces. `0.0.0.0` and `::` are listen addresses, not certificate identities, and are rejected. The server certificate must be signed by the transport CA and contain the configured SANs.
+`FLARETUNNEL_TLS_SAN` accepts DNS names, IPv4 addresses, and IPv6 addresses separated by spaces. `0.0.0.0` and `::` are listen addresses, not valid certificate SANs. The server certificate must contain the identities used by clients.
 
-FlareTunnel does not use the transport CA private key. That key remains in the manager, which generates the ephemeral server certificate.
+The transport certificate and key are server artifacts. FlareTunnel does not need the transport CA private key.
 
-## Commands
+## Blocklists
 
-| Command | Function |
-| --- | --- |
-| `config` | Configure Cloudflare accounts. |
-| `create` | Create proxy Workers. |
-| `list` | List available Workers. |
-| `test` | Test Worker connectivity. |
-| `tunnel` | Start the local proxy. |
-| `export` | Export the configuration. |
-| `import` | Import a configuration. |
-| `cleanup` | Delete Workers, preferably using the bounded form. |
+Three files are included:
 
-Examples:
+| File | Intended use | Expected effect |
+| --- | --- | --- |
+| `blacklist-minimal.txt` | Recommended for browsing | Blocks analytics, images, fonts, and source maps. |
+| `blacklist.txt` | Stronger savings | Adds advertising, tracking, CSS/JS, and CDN assets. Pages may be incomplete. |
+| `blacklist-aggressive.txt` | Targeted automation | Keeps mostly HTML/API traffic. Browsers may no longer work correctly. |
 
-```bash
-./flaretunnel config
-./flaretunnel create --count 5 --account main
-./flaretunnel list --verbose
-./flaretunnel test --url https://example.com
-./flaretunnel cleanup --account main --count 5 --yes
+A blocklist reduces Worker requests but can change site rendering. Test the selected level against real traffic.
+
+## LLM and SSE streaming
+
+FlareTunnel does not modify LLM payloads or transform `{"stream":true}`. HTTP responses are written as they arrive; the `CONNECT` path forwards bytes directly over the hijacked TLS connection.
+
+There is no global timeout for the body. Connection-establishment and upstream-header deadlines remain bounded. When the client disconnects, the upstream context is cancelled and the tunnel is closed.
+
+## Python example
+
+```python
+import requests
+
+proxy = "http://user1:pass1@127.0.0.1:8080"
+proxies = {"http": proxy, "https": proxy}
+
+response = requests.get(
+    "https://httpbin.org/ip",
+    proxies=proxies,
+    timeout=30,
+    verify=False,  # only when the test CA is not installed
+)
+print(response.json()["origin"])
 ```
 
-The bounded `cleanup` form requires `--account`, `--count`, and `--yes`. It never deletes more Workers than the requested limit.
+In production, install the appropriate public CA in the trust store and keep TLS verification enabled.
 
-## Using FlareTunnel as a proxy
-
-For a standard HTTP client:
+## CLI reference
 
 ```text
-HTTP proxy  : http://proxy-user:password@127.0.0.1:8080
-HTTPS proxy : http://proxy-user:password@127.0.0.1:8080
+Usage: flaretunnel <command> [options]
+
+Commands:
+  config     Configure Cloudflare credentials
+  create     Create Workers
+  list       List Workers and analytics
+  test       Test Workers
+  export     Export configuration
+  import     Import configuration
+  cleanup    Delete Workers
+  tunnel     Start the local proxy
 ```
-
-For a transport-TLS listener:
-
-```text
-HTTPS proxy : https://proxy-user:password@proxy.example.com:8080
-```
-
-The transport CA public certificate must be installed in the client trust store. The MITM CA is required separately to validate certificates for intercepted domains.
-
-## Streaming and passthrough
-
-FlareTunnel does not parse LLM bodies or transform `{"stream":true}`. The HTTP path writes each received block and calls `Flush` when supported by the server. The `CONNECT` path writes directly to the hijacked TLS connection and recreates only the HTTP framing that is required.
-
-No global timeout cuts off an SSE body. When the client disconnects, the upstream request context is cancelled and the tunnel is closed.
-
-## Recommended deployment
-
-For a PaaS, VPS, or local deployment using the same Docker image, use `FlareTunnel-Manager`. The manager builds its image with the FlareTunnel binary, embeds public certificates only, receives private keys as secrets, generates the transport certificate, and launches FlareTunnel as a child process.
-
-`omni-boot` is a separate deployment. It does not share the manager image and communicates with FlareTunnel only through the proxy protocol and the public certificates required for TLS validation.
-
-## Security
-
-Never disable client-side TLS validation. Do not use `rejectUnauthorized: false` or `NODE_TLS_REJECT_UNAUTHORIZED=0`. Do not publish private keys, Base64-encoded key values, ephemeral server certificates, or runtime artifacts.
-
-The MITM and transport CAs are independent. Do not replace them or mix their private keys. Rotating either CA requires a coordinated operation with all clients that trust it.
 
 ## Development tests
 
 ```bash
+gofmt -w *.go
 go test ./...
 go vet ./...
 go build ./...
 git diff --check
 ```
 
+The test suite covers proxy authentication, `CONNECT`, SSE streaming, transport TLS certificates, and bounded cleanup behavior.
+
+## Security and limitations
+
+Use FlareTunnel only with accounts, Workers, and destinations for which you have authorization. Follow Cloudflare’s terms and applicable law.
+
+Do not disable TLS verification in production. Never publish CA private keys, configuration files containing tokens, or runtime certificates. Keep the MITM and transport CAs separate.
+
 ## License and responsibility
 
-See the repository license files. Use this software in accordance with Cloudflare’s terms, applicable law, and the rules of the services you access.
+Review the repository license files and the terms of its dependencies. This project is provided for administration, testing, and research. Users are responsible for their use of the software.
 
 ## References
 
-- [Cloudflare Workers](https://developers.cloudflare.com/workers/)
-- [Go TLS package](https://pkg.go.dev/crypto/tls)
-- [HTTP CONNECT](https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods/CONNECT)
+- [Cloudflare Workers](https://developers.cloudflare.com/workers/ "Cloudflare Workers documentation")
+- [Go `crypto/tls`](https://pkg.go.dev/crypto/tls "Go TLS package")
+- [HTTP CONNECT method](https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods/CONNECT "HTTP CONNECT documentation")
 
 ---
 
-[Read this documentation in French](README.md)
+[Lire cette documentation en français](README.md)
