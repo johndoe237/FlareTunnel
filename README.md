@@ -256,7 +256,7 @@ This tool is for educational and research purposes only. Please respect Cloudfla
 
 Lorsque l’interception SSL est activée, FlareTunnel utilise un **MITM TLS explicite**. Le client établit un `CONNECT` vers FlareTunnel, FlareTunnel présente au client un certificat de domaine signé par le CA FlareTunnel, déchiffre la requête HTTPS, puis envoie une requête HTTPS distincte vers le Worker Cloudflare. Le Worker récupère ensuite la cible à partir de l’URL de routage et transmet le body upstream.
 
-Le client qui utilise FlareTunnel doit donc faire confiance au certificat public `Flaretunnel-CA.crt`. La clé privée du CA ne doit jamais être installée dans le client, dans `omni-boot` ou dans OmniRoute. Elle reste uniquement dans le déploiement de FlareTunnel-Manager.
+Le client qui utilise FlareTunnel doit donc faire confiance au certificat public `Flaretunnel-MITM-CA.crt`. La clé privée du CA ne doit jamais être installée dans le client, dans `omni-boot` ou dans OmniRoute. Elle reste uniquement dans le déploiement de FlareTunnel-Manager.
 
 Cette architecture permet à FlareTunnel de relayer les requêtes HTTPS d’OmniRoute sans modifier les URLs provider ni demander à OmniRoute d’envoyer des requêtes HTTP non chiffrées au proxy. Elle implique une conséquence de sécurité importante : toute personne qui obtient la clé privée du CA peut forger un certificat pour n’importe quel domaine intercepté par FlareTunnel. La protection repose donc sur le gestionnaire de secrets du déploiement, l’absence de logs de la clé, les permissions runtime `0600`, l’authentification du proxy et la rotation manuelle du couple CA public/privé en cas de suspicion de fuite.
 

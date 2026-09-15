@@ -1243,8 +1243,8 @@ type ProxyServer struct {
 const proxyAuthBasicEnv = "AUTH_PROXY_BASIC"
 
 const (
-	caCertFileEnv = "FLARETUNNEL_CA_CERT_FILE"
-	caKeyFileEnv  = "FLARETUNNEL_CA_KEY_FILE"
+	caCertFileEnv = "FLARETUNNEL_MITM_CA_CERT"
+	caKeyFileEnv  = "FLARETUNNEL_MITM_CA_KEY"
 )
 
 // ValidateProxyAuthBasic validates the already encoded Basic credential. The
